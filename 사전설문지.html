@@ -202,12 +202,6 @@ let state = {
   teacherRows: null,
 };
 
-function el(html) {
-  const t = document.createElement("template");
-  t.innerHTML = html.trim();
-  return t.content.firstElementChild;
-}
-
 function likertBlock(title, note, items, arrKey) {
   const rows = items.map((q, i) => {
     const opts = scaleLabels.map((lab, v) => {
@@ -251,6 +245,11 @@ window.submitSurvey = async () => {
     render();
     return;
   }
+  if (!window.storage || typeof window.storage.set !== "function") {
+    state.errorMsg = "저장소 연결을 찾을 수 없어요. 이 설문은 Claude 대화창(아티팩트) 안에서 열어야 저장이 됩니다. 다운로드한 HTML 파일을 그냥 브라우저에서 열면 저장되지 않을 수 있어요.";
+    render();
+    return;
+  }
   state.errorMsg = "";
   state.submitting = true;
   render();
@@ -263,10 +262,10 @@ window.submitSurvey = async () => {
   try {
     const key = `${SURVEY_KEY_PREFIX}${state.code}__${Date.now()}`;
     const result = await window.storage.set(key, JSON.stringify(payload), true);
-    if (!result) throw new Error("저장 실패");
+    if (!result) throw new Error("storage.set returned empty result");
     state.view = "thanks";
   } catch (e) {
-    state.errorMsg = "저장 중 오류가 발생했어요. 다시 시도해주세요.";
+    state.errorMsg = "저장 중 오류가 발생했어요: " + (e && e.message ? e.message : String(e));
   }
   state.submitting = false;
   render();
@@ -289,6 +288,11 @@ window.checkTeacherPass = async () => {
 };
 
 async function loadTeacherData() {
+  if (!window.storage || typeof window.storage.list !== "function") {
+    state.teacherRows = [];
+    state.errorMsg = "저장소 연결을 찾을 수 없어요. Claude 대화창(아티팩트) 안에서 열어야 결과를 볼 수 있어요.";
+    return;
+  }
   try {
     const listResult = await window.storage.list(SURVEY_KEY_PREFIX, true);
     const keys = listResult ? listResult.keys : [];
@@ -303,6 +307,7 @@ async function loadTeacherData() {
     state.teacherRows = rows;
   } catch (e) {
     state.teacherRows = [];
+    state.errorMsg = "결과를 불러오는 중 오류: " + (e && e.message ? e.message : String(e));
   }
 }
 
@@ -394,6 +399,7 @@ function render() {
           <p>총 ${n}명이 응답했습니다.</p>
         </div>
         <button class="back-btn" onclick="goForm()">← 설문지로</button>
+        ${state.errorMsg ? `<p class="req" style="font-size:13px;">${state.errorMsg}</p>` : ""}
         ${n === 0 ? '<div class="card"><p class="empty-msg">아직 제출된 응답이 없습니다.</p></div>' : `
         <div class="stat-grid">
           <div class="stat-box"><div class="num">${n}</div><div class="lbl">총 응답 수</div></div>
@@ -491,8 +497,6 @@ function render() {
       <button onclick="goTeacherAuth()">선생님이신가요? 결과 보기</button>
     </div>
   `;
-
-  // 라디오 체크 상태 유지를 위해 재바인딩 필요 없음 (매번 새로 렌더링)
 }
 
 render();
