@@ -158,7 +158,8 @@
 <div class="wrap" id="app"></div>
 
 <script>
-const SURVEY_KEY_PREFIX = "response:pre:";
+// ⚠️ 아래 URL을 Apps Script 배포 후 받은 "웹 앱 URL"로 교체하세요.
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwP-u91RhsNSlBNgB85l3BbRwxo_nt9nmnisU6RgETkYJKpcu7iN2bH3VTzQdYlCZLtuw/exec";
 
 // ---------- 문항 정의 ----------
 const experienceItems = [
@@ -191,7 +192,7 @@ const scaleLabels = ["전혀\n그렇지 않다", "그렇지\n않다", "보통이
 
 // ---------- 상태 ----------
 let state = {
-  view: "form", // form | thanks | teacher-auth | teacher
+  view: "form", // form | thanks
   dept: "", grade: "", gender: "", code: "",
   exp: Array(experienceItems.length).fill(null),
   eff: Array(efficacyItems.length).fill(null),
@@ -199,7 +200,6 @@ let state = {
   q1: "", q2: "",
   submitting: false,
   errorMsg: "",
-  teacherRows: null,
 };
 
 function likertBlock(title, note, items, arrKey) {
@@ -245,8 +245,8 @@ window.submitSurvey = async () => {
     render();
     return;
   }
-  if (!window.storage || typeof window.storage.set !== "function") {
-    state.errorMsg = "저장소 연결을 찾을 수 없어요. 이 설문은 Claude 대화창(아티팩트) 안에서 열어야 저장이 됩니다. 다운로드한 HTML 파일을 그냥 브라우저에서 열면 저장되지 않을 수 있어요.";
+  if (!GAS_URL || GAS_URL.indexOf("여기에_") === 0) {
+    state.errorMsg = "설문 저장 주소(GAS_URL)가 아직 설정되지 않았어요. 관리자에게 문의해주세요.";
     render();
     return;
   }
@@ -257,98 +257,22 @@ window.submitSurvey = async () => {
     dept: state.dept, grade: state.grade, gender: state.gender, code: state.code,
     exp: state.exp, eff: state.eff, att: state.att,
     q1: state.q1, q2: state.q2,
-    submittedAt: new Date().toISOString(),
   };
   try {
-    const key = `${SURVEY_KEY_PREFIX}${state.code}__${Date.now()}`;
-    const result = await window.storage.set(key, JSON.stringify(payload), true);
-    if (!result) throw new Error("storage.set returned empty result");
+    // Apps Script는 CORS preflight를 지원하지 않으므로 no-cors + text/plain으로 전송합니다.
+    // (응답 내용은 읽을 수 없지만, 네트워크 오류가 없으면 정상 저장된 것으로 처리합니다.)
+    await fetch(GAS_URL, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
     state.view = "thanks";
   } catch (e) {
-    state.errorMsg = "저장 중 오류가 발생했어요: " + (e && e.message ? e.message : String(e));
+    state.errorMsg = "저장 중 네트워크 오류가 발생했어요: " + (e && e.message ? e.message : String(e)) + " (인터넷 연결을 확인하고 다시 시도해주세요.)";
   }
   state.submitting = false;
   render();
-};
-
-window.goTeacherAuth = () => { state.view = "teacher-auth"; render(); };
-window.goForm = () => { state.view = "form"; render(); };
-
-window.checkTeacherPass = async () => {
-  const input = document.getElementById("teacherPass").value;
-  if (input !== "teacher") {
-    state.errorMsg = "코드가 올바르지 않습니다. (선생님께 문의)";
-    render();
-    return;
-  }
-  state.errorMsg = "";
-  state.view = "teacher";
-  await loadTeacherData();
-  render();
-};
-
-async function loadTeacherData() {
-  if (!window.storage || typeof window.storage.list !== "function") {
-    state.teacherRows = [];
-    state.errorMsg = "저장소 연결을 찾을 수 없어요. Claude 대화창(아티팩트) 안에서 열어야 결과를 볼 수 있어요.";
-    return;
-  }
-  try {
-    const listResult = await window.storage.list(SURVEY_KEY_PREFIX, true);
-    const keys = listResult ? listResult.keys : [];
-    const rows = [];
-    for (const k of keys) {
-      try {
-        const r = await window.storage.get(k, true);
-        if (r && r.value) rows.push({ _key: k, ...JSON.parse(r.value) });
-      } catch (e) { /* skip broken row */ }
-    }
-    rows.sort((a,b) => (a.submittedAt||"").localeCompare(b.submittedAt||""));
-    state.teacherRows = rows;
-  } catch (e) {
-    state.teacherRows = [];
-    state.errorMsg = "결과를 불러오는 중 오류: " + (e && e.message ? e.message : String(e));
-  }
-}
-
-window.deleteResponse = async (key, codeLabel) => {
-  if (!confirm(`코드 [${codeLabel}] 응답을 삭제할까요?\n이 작업은 되돌릴 수 없습니다.`)) return;
-  try {
-    await window.storage.delete(key, true);
-    state.teacherRows = state.teacherRows.filter(r => r._key !== key);
-    render();
-  } catch (e) {
-    alert("삭제 중 오류가 발생했어요. 다시 시도해주세요.");
-  }
-};
-
-function avg(nums) {
-  const valid = nums.filter(n => typeof n === "number");
-  if (valid.length === 0) return "-";
-  return (valid.reduce((a,b) => a+b, 0) / valid.length).toFixed(2);
-}
-
-window.downloadCSV = () => {
-  const rows = state.teacherRows || [];
-  const header = ["코드","학과","학년/반","성별",
-    ...experienceItems.map((_,i)=>"경험"+(i+1)),
-    ...efficacyItems.map((_,i)=>"효능감"+(i+1)),
-    ...attitudeItems.map((_,i)=>"인식"+(i+1)),
-    "주관식1","주관식2","제출시각"];
-  const lines = [header.join(",")];
-  rows.forEach(r => {
-    const line = [r.code, r.dept, r.grade, r.gender,
-      ...r.exp, ...r.eff, ...r.att,
-      `"${(r.q1||"").replace(/"/g,'""')}"`, `"${(r.q2||"").replace(/"/g,'""')}"`,
-      r.submittedAt].join(",");
-    lines.push(line);
-  });
-  const csv = "\uFEFF" + lines.join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "사전설문_응답결과.csv";
-  a.click();
 };
 
 // ---------- 렌더 ----------
@@ -361,82 +285,6 @@ function render() {
         <div class="check">✓</div>
         <h2>설문에 응답해 주셔서 감사합니다!</h2>
         <p>제출이 정상적으로 완료되었습니다.<br/>프로젝트가 끝난 뒤 사후 설문에서 다시 만나요.</p>
-      </div>`;
-    return;
-  }
-
-  if (state.view === "teacher-auth") {
-    app.innerHTML = `
-      <div class="hero">
-        <span class="tag">교사용</span>
-        <h1>결과 보기</h1>
-        <p>접속 코드를 입력하면 학생 응답 결과를 확인할 수 있습니다.</p>
-      </div>
-      <div class="card">
-        <label class="field-label">접속 코드</label>
-        <input type="text" id="teacherPass" placeholder="코드를 입력하세요" />
-        ${state.errorMsg ? `<p class="req" style="margin-top:8px;font-size:13px;">${state.errorMsg}</p>` : ""}
-        <div style="margin-top:14px; display:flex; gap:8px;">
-          <button class="submit" style="padding:10px 24px;font-size:14px;" onclick="checkTeacherPass()">확인</button>
-          <button class="back-btn" onclick="goForm()">설문으로 돌아가기</button>
-        </div>
-      </div>`;
-    return;
-  }
-
-  if (state.view === "teacher") {
-    const rows = state.teacherRows || [];
-    const n = rows.length;
-    const expAvgs = experienceItems.map((_,i)=>avg(rows.map(r=>r.exp[i])));
-    const effAvgs = efficacyItems.map((_,i)=>avg(rows.map(r=>r.eff[i])));
-    const attAvgs = attitudeItems.map((_,i)=>avg(rows.map(r=>r.att[i])));
-
-    app.innerHTML = `
-      <div class="teacher-view">
-        <div class="hero">
-          <span class="tag">교사용</span>
-          <h1>사전 설문 결과</h1>
-          <p>총 ${n}명이 응답했습니다.</p>
-        </div>
-        <button class="back-btn" onclick="goForm()">← 설문지로</button>
-        ${state.errorMsg ? `<p class="req" style="font-size:13px;">${state.errorMsg}</p>` : ""}
-        ${n === 0 ? '<div class="card"><p class="empty-msg">아직 제출된 응답이 없습니다.</p></div>' : `
-        <div class="stat-grid">
-          <div class="stat-box"><div class="num">${n}</div><div class="lbl">총 응답 수</div></div>
-          <div class="stat-box"><div class="num">${avg(rows.map(r=>r.exp.reduce((a,b)=>a+b,0)/r.exp.length))}</div><div class="lbl">AI 경험 평균</div></div>
-          <div class="stat-box"><div class="num">${avg(rows.map(r=>r.eff.reduce((a,b)=>a+b,0)/r.eff.length))}</div><div class="lbl">문제해결 자기효능감 평균</div></div>
-          <div class="stat-box"><div class="num">${avg(rows.map(r=>r.att.reduce((a,b)=>a+b,0)/r.att.length))}</div><div class="lbl">AI 인식 평균</div></div>
-        </div>
-        <button class="csv-btn" onclick="downloadCSV()">CSV로 내려받기 (엑셀에서 열기)</button>
-        <div class="card">
-          <div class="section-title">문항별 평균 점수</div>
-          <table class="result-table">
-            <tr><th>영역</th>${experienceItems.map((_,i)=>`<th>경험${i+1}</th>`).join("")}</tr>
-            <tr><td>AI 활용 경험</td>${expAvgs.map(v=>`<td>${v}</td>`).join("")}</tr>
-          </table>
-          <table class="result-table" style="margin-top:14px;">
-            <tr><th>영역</th>${efficacyItems.map((_,i)=>`<th>효능${i+1}</th>`).join("")}</tr>
-            <tr><td>문제해결 자기효능감</td>${effAvgs.map(v=>`<td>${v}</td>`).join("")}</tr>
-          </table>
-          <table class="result-table" style="margin-top:14px;">
-            <tr><th>영역</th>${attitudeItems.map((_,i)=>`<th>인식${i+1}</th>`).join("")}</tr>
-            <tr><td>AI 인식·태도</td>${attAvgs.map(v=>`<td>${v}</td>`).join("")}</tr>
-          </table>
-        </div>
-        <div class="card">
-          <div class="section-title">응답자별 상세 (삭제 가능)</div>
-          <p class="section-note" style="margin-bottom:12px;">잘못 제출된 응답은 코드를 확인한 뒤 삭제 버튼을 눌러 제거할 수 있습니다.</p>
-          ${rows.map(r => `
-            <div style="padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;display:flex;justify-content:space-between;gap:10px;align-items:flex-start;">
-              <div style="flex:1;">
-                <div style="color:var(--sub);margin-bottom:4px;">코드: <b>${r.code}</b> (${r.dept||"-"} / ${r.grade||"-"}) · ${r.submittedAt ? new Date(r.submittedAt).toLocaleString("ko-KR") : ""}</div>
-                <div><b>Q1.</b> ${r.q1 || "(무응답)"}</div>
-                <div><b>Q2.</b> ${r.q2 || "(무응답)"}</div>
-              </div>
-              <button onclick="deleteResponse('${r._key}', '${r.code}')" style="flex-shrink:0;background:#fdeceb;color:#c0392b;border:1px solid #f3c8c4;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;">삭제</button>
-            </div>`).join("")}
-        </div>
-        `}
       </div>`;
     return;
   }
@@ -494,12 +342,13 @@ function render() {
     </div>
 
     <div class="footer-link">
-      <button onclick="goTeacherAuth()">선생님이신가요? 결과 보기</button>
+      <span>응답 결과는 담당 선생님의 구글시트에서 확인할 수 있습니다.</span>
     </div>
   `;
 }
 
 render();
 </script>
+
 </body>
 </html>
